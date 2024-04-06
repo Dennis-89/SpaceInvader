@@ -1,20 +1,25 @@
-import pygame
 import random
-from pygame import mixer
-from pathlib import Path
-from attr import define, field
 from itertools import product
+from pathlib import Path
+
+import pygame
+from pygame import mixer
 
 WIDTH = 800
 HIGH = 600
 SCREEN_SIZE = (WIDTH, HIGH)
-BACKGROUND_IMAGE = Path(__file__).parent / "space.jpg"
-ENEMY_IMAGE = Path(__file__).parent / "monster.png"
+
+FILES_PATH = Path(__file__).parent
+
+BACKGROUND_IMAGE = FILES_PATH / "space.jpg"
+ENEMY_IMAGE = FILES_PATH / "monster.png"
 IMAGE_SIZE_ENEMY = (63, 63)
-PLAYER_IMAGE = Path(__file__).parent / "Player.png"
+PLAYER_IMAGE = FILES_PATH / "Player.png"
 IMAGE_SIZE_PLAYER = (63, 63)
-BULLET_IMAGE = Path(__file__).parent / "rocket.png"
+BULLET_IMAGE = FILES_PATH / "rocket.png"
 IMAGE_SIZE_BULLET = (64, 64)
+
+SHOOT_SOUND = FILES_PATH / "laser.wav"
 
 SCORE_TEXT_X = 10
 SCORE_TEXT_Y = 10
@@ -22,141 +27,126 @@ SCORE_TEXT_Y = 10
 START_POSITION_PLAYER_X = 370
 START_POSITION_Y = HIGH - 120
 
-PLAYER_SPEED = 1
-BULLET_SPEED = 0.2
+PLAYER_SPEED = 5
 
-NUMBER_OF_ENEMY = 10
-ENEMY_SPEED = 0.3
+NUMBER_OF_ENEMY = 30
+ENEMY_SPEED = 1
 ENEMY_Y_STEP = 40
-MAX_DISTANCE_BULLET = 28
-MAX_ENEMIES = 80
-MAX_BULLETS = 1
+
+NUMBER_OF_BULLETS = 100
+BULLET_SPEED = 5
 
 
-@define
-class CollisionDetector:
-    x = field()
-    y = field()
-
-    def __add__(self, other):
-        return CollisionDetector(abs(self.x - other.x), abs(self.y - other.y))
-
-    def __call__(self):
-        return self.x < MAX_DISTANCE_BULLET and self.y < MAX_DISTANCE_BULLET
-
-
-@define
-class Figure(CollisionDetector):
-    direction = field()
-    default_direction = field(default="+")
-    y_direction_blocked = field(default=True)
+class Figure(pygame.sprite.Sprite):
+    def __init__(self, rect, image):
+        pygame.sprite.Sprite.__init__(self)
+        self.rect = rect
+        self.image = image
 
     @classmethod
-    def new(cls, x, y, move_in_x, blocked):
-        return cls(x, y, {"+": move_in_x, "-": -move_in_x}, y_direction_blocked=blocked)
+    def new(cls, x, y, image_size, image):
+        return cls(pygame.Rect(x, y, *image_size), image)
 
-    def calculate_next_position(self, direction=None):
-        if direction is None:
-            direction = self.default_direction
-        self.x += self.direction[direction]
-        if self.x < 0 or self.x > WIDTH - IMAGE_SIZE_PLAYER[0]:
-            self.x = WIDTH - IMAGE_SIZE_PLAYER[0] if direction == "+" else 0
-            if not self.y_direction_blocked:
-                self._change_y_position()
-
-    def _change_y_position(self):
-        if self.y > HIGH:
-            self.y = 50
-        else:
-            self.y += ENEMY_Y_STEP
-        self.default_direction = "+" if self.default_direction == "-" else "-"
+    def update(self, x, y=0):
+        self.rect.move_ip(x, 0)
+        if y == 0:
+            if self.rect.x <= 0:
+                self.rect.x = 0
+            elif self.rect.x >= WIDTH - IMAGE_SIZE_ENEMY[0]:
+                self.rect.x = WIDTH - IMAGE_SIZE_ENEMY[0]
+        elif self.rect.x >= WIDTH:
+            self.rect.x = 0
+            self.rect.y += y
+        elif self.rect.y > START_POSITION_Y - IMAGE_SIZE_ENEMY[0]:
+            self.rect.y = random.randint(50, 150)
 
 
-@define
-class Bullet(CollisionDetector):
-    is_active = field(default=False)
+class Bullet(pygame.sprite.Sprite):
+    def __init__(self, rect, image):
+        pygame.sprite.Sprite.__init__(self)
+        self.rect = rect
+        self.image = image
+        self.is_active = False
 
-    def change_y_position(self):
-        self.y -= BULLET_SPEED
+    @classmethod
+    def new(cls, x, y, image_size, image):
+        return cls(pygame.Rect(x, y, *image_size), image)
+
+    def update(self):
+        if self.is_active:
+            if self.rect.y == HIGH + START_POSITION_Y:
+                self.rect.y = START_POSITION_Y
+            self.rect.y -= BULLET_SPEED
+            if self.rect.y < 0:
+                self.is_active = False
+                self.rect.y = HIGH + IMAGE_SIZE_BULLET[0]
 
 
-@define
-class Game:
-    screen = field()
-    background = field()
-    player_image = field()
-    enemy_image = field()
-    bullet_image = field()
-    player = field()
-    bullets = field()
-    enemies = field()
-    font = field()
-    game_on = field(default=True)
-    is_gun_loaded = field(default=True)
-    score = field(default=0)
+class Gun:
+    def __init__(self):
+        self.is_ready = True
+        self.fire_event = pygame.USEREVENT + 1
 
-    def run(self):
-        while self.game_on:
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    self.game_on = False
-            keys = pygame.key.get_pressed()
-            self.process_user_input(keys)
-            self.clear_screen()
-            self.move_figure(self.player_image, (self.player.x, self.player.y))
-            for enemy, bullet in product(self.enemies, self.bullets):
-                enemy.calculate_next_position()
-                if (enemy + bullet)() and bullet.is_active:
-                    bullet.y = self.player.y
-                    bullet.is_active = False
-                    self.score += 1
-                    enemy.x = random.randint(0, WIDTH - IMAGE_SIZE_ENEMY[0])
-                    enemy.y = random.randint(50, 150)
-                    ex_sound = mixer.Sound("explosion.wav")
-                    ex_sound.play()
-                    if len(self.enemies) < MAX_ENEMIES:
-                        self.enemies.append(
-                            Figure.new(
-                                random.randint(0, WIDTH - IMAGE_SIZE_ENEMY[0]),
-                                random.randint(50, 150),
-                                ENEMY_SPEED,
-                                False,
-                            )
-                        )
-                self.move_figure(self.enemy_image, (enemy.x, enemy.y))
-                if bullet.is_active:
-                    self.move_figure(self.bullet_image, (bullet.x, bullet.y))
-                    bullet.change_y_position()
-                    if bullet.y < -50:
-                        bullet.y = self.player.y
-                        bullet.x = self.player.x
-                        bullet.is_active = False
-            self.show_score((SCORE_TEXT_X, SCORE_TEXT_Y))
-            pygame.display.update()
 
-    def process_user_input(self, keys):
-        if keys[pygame.K_LEFT]:
-            self.player.calculate_next_position("-")
-        elif keys[pygame.K_RIGHT]:
-            self.player.calculate_next_position("+")
-        elif keys[pygame.K_SPACE]:
-            for bullet in self.bullets:
-                if not bullet.is_active:
-                    mixer.Sound("laser.wav").play()
-                    bullet.x = self.player.x
-                    bullet.is_active = True
-                    break
+def is_collided_with(bullet, enemy):
+    if bullet.is_active:
+        return pygame.sprite.collide_rect(bullet, enemy)
 
-    def clear_screen(self):
-        self.screen.blit(self.background, (0, 0))
 
-    def move_figure(self, image, position):
-        self.screen.blit(image, position)
-
-    def show_score(self, position):
-        self.screen.blit(
-            self.font.render(f"Score : {self.score}", True, (255, 255, 255)), position
+def control_game(
+    screen,
+    background,
+    players,
+    enemies,
+    bullets,
+    font,
+):
+    clock = pygame.time.Clock()
+    game_on = True
+    score = 0
+    gun = Gun()
+    while game_on:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                game_on = False
+            if event.type == gun.fire_event:
+                gun.is_ready = True
+                pygame.time.set_timer(gun.fire_event, 0)
+        keys = pygame.key.get_pressed()
+        process_user_input(keys, players, bullets, gun)
+        for bullet, enemy in product(bullets, enemies):
+            if is_collided_with(bullet, enemy):
+                bullet.is_active = False
+                bullet.rect.y = HIGH + START_POSITION_Y
+                score += 1
+        screen.blit(background, (0, 0))
+        screen.blit(
+            font.render(f"Score : {score}", True, (255, 255, 255)),
+            (SCORE_TEXT_X, SCORE_TEXT_Y),
         )
+        players.draw(screen)
+        enemies.update(ENEMY_SPEED, ENEMY_Y_STEP)
+        enemies.draw(screen)
+        bullets.update()
+        bullets.draw(screen)
+        pygame.display.update()
+        clock.tick(100)
+
+
+def process_user_input(keys, players, bullets, gun):
+    if keys[pygame.K_LEFT]:
+        players.update(-PLAYER_SPEED)
+    elif keys[pygame.K_RIGHT]:
+        players.update(PLAYER_SPEED)
+    elif keys[pygame.K_SPACE] and gun.is_ready:
+        gun.is_ready = False
+        mixer.Sound(SHOOT_SOUND).play()
+        for bullet in bullets:
+            if not bullet.is_active:
+                bullet.is_active = True
+                for player in players:
+                    bullet.rect.x = player.rect.x
+        pygame.time.set_timer(gun.fire_event, 100)
 
 
 def main():
@@ -167,39 +157,56 @@ def main():
     player_image = pygame.transform.scale(
         pygame.image.load(PLAYER_IMAGE), IMAGE_SIZE_PLAYER
     )
-    player = Figure.new(START_POSITION_PLAYER_X, START_POSITION_Y, PLAYER_SPEED, True)
-    enemies = [
-        Figure.new(
-            random.randint(0, WIDTH - IMAGE_SIZE_ENEMY[0]),
-            random.randint(50, 150),
-            ENEMY_SPEED,
-            False,
-        )
-        for _ in range(NUMBER_OF_ENEMY)
-    ]
-    bullets = [
-        Bullet(x=0, y=START_POSITION_Y, is_active=False) for _ in range(MAX_BULLETS)
-    ]
     enemy_image = pygame.transform.scale(
         pygame.image.load(ENEMY_IMAGE), IMAGE_SIZE_ENEMY
     )
     bullet_image = pygame.transform.scale(
         pygame.image.load(BULLET_IMAGE), IMAGE_SIZE_BULLET
     )
+    player = pygame.sprite.Group()
+    player.add(
+        Figure.new(
+            START_POSITION_PLAYER_X,
+            START_POSITION_Y,
+            IMAGE_SIZE_PLAYER,
+            player_image,
+        )
+    )
+    enemies = pygame.sprite.Group()
+    enemies.add(
+        *[
+            Figure.new(
+                random.randint(0, WIDTH - IMAGE_SIZE_ENEMY[0]),
+                random.randint(50, 150),
+                IMAGE_SIZE_ENEMY,
+                enemy_image,
+            )
+            for _ in range(NUMBER_OF_ENEMY)
+        ]
+    )
+    bullets = pygame.sprite.Group()
+    bullets.add(
+        *[
+            Bullet.new(
+                0,
+                START_POSITION_Y,
+                IMAGE_SIZE_BULLET,
+                bullet_image,
+            )
+            for _ in range(NUMBER_OF_BULLETS)
+        ]
+    )
+
     font = pygame.font.Font("freesansbold.ttf", 32)
 
-    game = Game(
+    control_game(
         screen,
         background,
-        player_image,
-        enemy_image,
-        bullet_image,
         player,
-        bullets,
         enemies,
+        bullets,
         font,
     )
-    game.run()
 
 
 if __name__ == "__main__":
