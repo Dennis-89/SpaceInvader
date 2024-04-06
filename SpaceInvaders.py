@@ -2,14 +2,13 @@ import pygame
 import random
 from pygame import mixer
 from pathlib import Path
-from attr import attrib, attrs
-
+from attr import define, field
+from itertools import product
 
 WIDTH = 800
 HIGH = 600
 SCREEN_SIZE = (WIDTH, HIGH)
 BACKGROUND_IMAGE = Path(__file__).parent / "space.jpg"
-UFO_IMAGE = Path(__file__).parent / "ufo.png"
 ENEMY_IMAGE = Path(__file__).parent / "monster.png"
 IMAGE_SIZE_ENEMY = (63, 63)
 PLAYER_IMAGE = Path(__file__).parent / "Player.png"
@@ -21,91 +20,142 @@ SCORE_TEXT_X = 10
 SCORE_TEXT_Y = 10
 
 START_POSITION_PLAYER_X = 370
-START_POSITION_PLAYER_Y = HIGH - 120
+START_POSITION_Y = HIGH - 120
 
 PLAYER_SPEED = 1
-BULLET_SPEED = 0.8
+BULLET_SPEED = 0.2
 
 NUMBER_OF_ENEMY = 10
 ENEMY_SPEED = 0.3
-ENEMY_STEP_CLOSER = 40
+ENEMY_Y_STEP = 40
+MAX_DISTANCE_BULLET = 28
+MAX_ENEMIES = 80
+MAX_BULLETS = 1
 
 
-@attrs(frozen=False)
-class Figure:
-    x_position = attrib(default=0)
-    y_position = attrib(default=0)
-    move_in_x = attrib(default=0)
-    move_in_y = attrib(default=0)
-    default_direction = attrib(default="+")
+@define
+class CollisionDetector:
+    x = field()
+    y = field()
 
-    def __attrs_post_init__(self):
-        self.direction = {"+": self.move_in_x, "-": -1 * self.move_in_x}
+    def __add__(self, other):
+        return CollisionDetector(abs(self.x - other.x), abs(self.y - other.y))
+
+    def __call__(self):
+        return self.x < MAX_DISTANCE_BULLET and self.y < MAX_DISTANCE_BULLET
+
+
+@define
+class Figure(CollisionDetector):
+    direction = field()
+    default_direction = field(default="+")
+    y_direction_blocked = field(default=True)
+
+    @classmethod
+    def new(cls, x, y, move_in_x, blocked):
+        return cls(x, y, {"+": move_in_x, "-": -move_in_x}, y_direction_blocked=blocked)
 
     def calculate_next_position(self, direction=None):
         if direction is None:
             direction = self.default_direction
-        self.x_position += self.direction[direction]
-        if self.x_position < 0 or self.x_position > WIDTH - IMAGE_SIZE_PLAYER[0]:
-            self.x_position = WIDTH - IMAGE_SIZE_PLAYER[0] if direction == "+" else 0
-            if self.move_in_y != 0:
+        self.x += self.direction[direction]
+        if self.x < 0 or self.x > WIDTH - IMAGE_SIZE_PLAYER[0]:
+            self.x = WIDTH - IMAGE_SIZE_PLAYER[0] if direction == "+" else 0
+            if not self.y_direction_blocked:
                 self._change_y_position()
 
     def _change_y_position(self):
-        if self.y_position > HIGH:
-            self.y_position = 50
+        if self.y > HIGH:
+            self.y = 50
         else:
-            self.y_position += ENEMY_STEP_CLOSER
+            self.y += ENEMY_Y_STEP
         self.default_direction = "+" if self.default_direction == "-" else "-"
 
 
-@attrs(frozen=False)
-class Bullet:
-    x_position = attrib(default=0)
-    y_position = attrib(default=START_POSITION_PLAYER_Y)
-    is_ready = attrib(default=True)
+@define
+class Bullet(CollisionDetector):
+    is_active = field(default=False)
 
     def change_y_position(self):
-        self.y_position -= BULLET_SPEED
+        self.y -= BULLET_SPEED
 
 
-def clear_screen(screen, background):
-    screen.fill((0, 0, 0))
-    screen.blit(background, (0, 0))
+@define
+class Game:
+    screen = field()
+    background = field()
+    player_image = field()
+    enemy_image = field()
+    bullet_image = field()
+    player = field()
+    bullets = field()
+    enemies = field()
+    font = field()
+    game_on = field(default=True)
+    is_gun_loaded = field(default=True)
+    score = field(default=0)
 
+    def run(self):
+        while self.game_on:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    self.game_on = False
+            keys = pygame.key.get_pressed()
+            self.process_user_input(keys)
+            self.clear_screen()
+            self.move_figure(self.player_image, (self.player.x, self.player.y))
+            for enemy, bullet in product(self.enemies, self.bullets):
+                enemy.calculate_next_position()
+                if (enemy + bullet)() and bullet.is_active:
+                    bullet.y = self.player.y
+                    bullet.is_active = False
+                    self.score += 1
+                    enemy.x = random.randint(0, WIDTH - IMAGE_SIZE_ENEMY[0])
+                    enemy.y = random.randint(50, 150)
+                    ex_sound = mixer.Sound("explosion.wav")
+                    ex_sound.play()
+                    if len(self.enemies) < MAX_ENEMIES:
+                        self.enemies.append(
+                            Figure.new(
+                                random.randint(0, WIDTH - IMAGE_SIZE_ENEMY[0]),
+                                random.randint(50, 150),
+                                ENEMY_SPEED,
+                                False,
+                            )
+                        )
+                self.move_figure(self.enemy_image, (enemy.x, enemy.y))
+                if bullet.is_active:
+                    self.move_figure(self.bullet_image, (bullet.x, bullet.y))
+                    bullet.change_y_position()
+                    if bullet.y < -50:
+                        bullet.y = self.player.y
+                        bullet.x = self.player.x
+                        bullet.is_active = False
+            self.show_score((SCORE_TEXT_X, SCORE_TEXT_Y))
+            pygame.display.update()
 
-def is_collision(enemy, bullet):
-    if bullet.is_ready:
-        return False
-    return (
-        abs(bullet.x_position - enemy.x_position) < 27 and abs(bullet.y_position - enemy.y_position) < 27
-    )
+    def process_user_input(self, keys):
+        if keys[pygame.K_LEFT]:
+            self.player.calculate_next_position("-")
+        elif keys[pygame.K_RIGHT]:
+            self.player.calculate_next_position("+")
+        elif keys[pygame.K_SPACE]:
+            for bullet in self.bullets:
+                if not bullet.is_active:
+                    mixer.Sound("laser.wav").play()
+                    bullet.x = self.player.x
+                    bullet.is_active = True
 
+    def clear_screen(self):
+        self.screen.blit(self.background, (0, 0))
 
-def fire_bullet(screen, bullet_image, position):
-    screen.blit(bullet_image, position)
+    def move_figure(self, image, position):
+        self.screen.blit(image, position)
 
-
-def move_figure(screen, image, position):
-    screen.blit(image, position)
-
-
-def process_user_input(pygame, bullet, player, keys):
-    if keys[pygame.K_LEFT]:
-        player.calculate_next_position("-")
-    elif keys[pygame.K_RIGHT]:
-        player.calculate_next_position("+")
-    elif keys[pygame.K_SPACE] and bullet.is_ready:
-        shut_sound = mixer.Sound("laser.wav")
-        shut_sound.play()
-        bullet.x_position = player.x_position
-        bullet.is_ready = False
-    return bullet
-
-
-def show_score(font, score_value, screen, position):
-    score = font.render(f"Score : {score_value}", True, (255, 255, 255))
-    screen.blit(score, position)
+    def show_score(self, position):
+        self.screen.blit(
+            self.font.render(f"Score : {self.score}", True, (255, 255, 255)), position
+        )
 
 
 def main():
@@ -113,19 +163,21 @@ def main():
     pygame.display.set_caption("Space Invader")
     screen = pygame.display.set_mode(SCREEN_SIZE)
     background = pygame.image.load(BACKGROUND_IMAGE)
-    pygame.display.set_icon(pygame.image.load(UFO_IMAGE))
     player_image = pygame.transform.scale(
         pygame.image.load(PLAYER_IMAGE), IMAGE_SIZE_PLAYER
     )
-    player = Figure(START_POSITION_PLAYER_X, START_POSITION_PLAYER_Y, PLAYER_SPEED)
+    player = Figure.new(START_POSITION_PLAYER_X, START_POSITION_Y, PLAYER_SPEED, True)
     enemies = [
-        Figure(
+        Figure.new(
             random.randint(0, WIDTH - IMAGE_SIZE_ENEMY[0]),
             random.randint(50, 150),
             ENEMY_SPEED,
-            ENEMY_STEP_CLOSER,
+            False,
         )
         for _ in range(NUMBER_OF_ENEMY)
+    ]
+    bullets = [
+        Bullet(x=0, y=START_POSITION_Y, is_active=False) for _ in range(MAX_BULLETS)
     ]
     enemy_image = pygame.transform.scale(
         pygame.image.load(ENEMY_IMAGE), IMAGE_SIZE_ENEMY
@@ -133,36 +185,20 @@ def main():
     bullet_image = pygame.transform.scale(
         pygame.image.load(BULLET_IMAGE), IMAGE_SIZE_BULLET
     )
-    score_value = 0
     font = pygame.font.Font("freesansbold.ttf", 32)
-    is_running = True
-    bullet = Bullet()
-    while is_running:
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                is_running = False
-        keys = pygame.key.get_pressed()
-        bullet = process_user_input(pygame, bullet, player, keys)
-        clear_screen(screen, background)
-        move_figure(screen, player_image, (player.x_position, player.y_position))
-        for enemy in enemies:
-            enemy.calculate_next_position()
-            if is_collision(enemy, bullet):
-                bullet = Bullet()
-                score_value += 1
-                enemy.x_position = random.randint(0, WIDTH - IMAGE_SIZE_ENEMY[0])
-                enemy.y_position = random.randint(50, 150)
-                ex_sound = mixer.Sound("explosion.wav")
-                ex_sound.play()
-            move_figure(screen, enemy_image, (enemy.x_position, enemy.y_position))
 
-        if not bullet.is_ready:
-            fire_bullet(screen, bullet_image, (bullet.x_position, bullet.y_position))
-            bullet.change_y_position()
-        if bullet.y_position < -50:
-            bullet = Bullet()
-        show_score(font, score_value, screen, (SCORE_TEXT_X, SCORE_TEXT_Y))
-        pygame.display.update()
+    game = Game(
+        screen,
+        background,
+        player_image,
+        enemy_image,
+        bullet_image,
+        player,
+        bullets,
+        enemies,
+        font,
+    )
+    game.run()
 
 
 if __name__ == "__main__":
