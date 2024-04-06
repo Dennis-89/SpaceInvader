@@ -145,6 +145,7 @@ class Game:
                     mixer.Sound("laser.wav").play()
                     bullet.x = self.player.x
                     bullet.is_active = True
+                    break
 
     def clear_screen(self):
         self.screen.blit(self.background, (0, 0))
