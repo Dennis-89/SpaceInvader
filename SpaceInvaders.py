@@ -3,7 +3,10 @@ from itertools import product
 from pathlib import Path
 
 import pygame
+from attr import define, field
 from pygame import mixer
+from pygame.sprite import Group, Sprite
+from pygame.time import Clock, set_timer
 
 WIDTH = 800
 HIGH = 600
@@ -37,9 +40,9 @@ NUMBER_OF_BULLETS = 100
 BULLET_SPEED = 5
 
 
-class Figure(pygame.sprite.Sprite):
+class Figure(Sprite):
     def __init__(self, rect, image):
-        pygame.sprite.Sprite.__init__(self)
+        Sprite.__init__(self)
         self.rect = rect
         self.image = image
 
@@ -61,9 +64,9 @@ class Figure(pygame.sprite.Sprite):
             self.rect.y = random.randint(50, 150)
 
 
-class Bullet(pygame.sprite.Sprite):
+class Bullet(Sprite):
     def __init__(self, rect, image):
-        pygame.sprite.Sprite.__init__(self)
+        Sprite.__init__(self)
         self.rect = rect
         self.image = image
         self.is_active = False
@@ -74,7 +77,7 @@ class Bullet(pygame.sprite.Sprite):
 
     def update(self):
         if self.is_active:
-            if self.rect.y == HIGH + START_POSITION_Y:
+            if self.rect.y == HIGH + IMAGE_SIZE_BULLET[0]:
                 self.rect.y = START_POSITION_Y
             self.rect.y -= BULLET_SPEED
             if self.rect.y < 0:
@@ -82,71 +85,71 @@ class Bullet(pygame.sprite.Sprite):
                 self.rect.y = HIGH + IMAGE_SIZE_BULLET[0]
 
 
-class Gun:
-    def __init__(self):
-        self.is_ready = True
-        self.fire_event = pygame.USEREVENT + 1
+@define
+class Game:
+    screen = field()
+    background = field()
+    players = field()
+    enemies = field()
+    bullets = field()
+    font = field()
+    fire_event = field()
+    score = field(default=0)
+    gun_is_ready = field(default=True)
+
+    def run(self):
+        clock = Clock()
+        game_on = True
+        while game_on:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    game_on = False
+                if event.type == self.fire_event:
+                    self.gun_is_ready = True
+                    set_timer(self.fire_event, 0)
+            keys = pygame.key.get_pressed()
+            self.process_user_input(keys)
+            for bullet, enemy in product(self.bullets, self.enemies):
+                if is_collided_with(bullet, enemy) and bullet.is_active:
+                    bullet.is_active = False
+                    bullet.rect.y = HIGH + IMAGE_SIZE_BULLET[0]
+                    enemy.rect.x = random.randint(0, WIDTH - IMAGE_SIZE_ENEMY[0])
+                    enemy.rect.y = random.randint(50, 150)
+                    self.score += 1
+                    break
+            self.screen.blit(self.background, (0, 0))
+            self.screen.blit(
+                self.font.render(f"Score : {self.score}", True, (255, 255, 255)),
+                (SCORE_TEXT_X, SCORE_TEXT_Y),
+            )
+            self.players.draw(self.screen)
+            self.enemies.update(ENEMY_SPEED, ENEMY_Y_STEP)
+            self.enemies.draw(self.screen)
+            self.bullets.update()
+            self.bullets.draw(self.screen)
+            pygame.display.update()
+            clock.tick(100)
+
+    def process_user_input(self, keys):
+        if keys[pygame.K_LEFT]:
+            self.players.update(-PLAYER_SPEED)
+        elif keys[pygame.K_RIGHT]:
+            self.players.update(PLAYER_SPEED)
+        elif keys[pygame.K_SPACE] and self.gun_is_ready:
+            self.gun_is_ready = False
+            mixer.Sound(SHOOT_SOUND).play()
+            for bullet in self.bullets:
+                if not bullet.is_active:
+                    bullet.is_active = True
+                    for player in self.players:
+                        bullet.rect.x = player.rect.x
+                    break
+            set_timer(self.fire_event, 100)
 
 
 def is_collided_with(bullet, enemy):
     if bullet.is_active:
         return pygame.sprite.collide_rect(bullet, enemy)
-
-
-def control_game(
-    screen,
-    background,
-    players,
-    enemies,
-    bullets,
-    font,
-):
-    clock = pygame.time.Clock()
-    game_on = True
-    score = 0
-    gun = Gun()
-    while game_on:
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                game_on = False
-            if event.type == gun.fire_event:
-                gun.is_ready = True
-                pygame.time.set_timer(gun.fire_event, 0)
-        keys = pygame.key.get_pressed()
-        process_user_input(keys, players, bullets, gun)
-        for bullet, enemy in product(bullets, enemies):
-            if is_collided_with(bullet, enemy):
-                bullet.is_active = False
-                bullet.rect.y = HIGH + START_POSITION_Y
-                score += 1
-        screen.blit(background, (0, 0))
-        screen.blit(
-            font.render(f"Score : {score}", True, (255, 255, 255)),
-            (SCORE_TEXT_X, SCORE_TEXT_Y),
-        )
-        players.draw(screen)
-        enemies.update(ENEMY_SPEED, ENEMY_Y_STEP)
-        enemies.draw(screen)
-        bullets.update()
-        bullets.draw(screen)
-        pygame.display.update()
-        clock.tick(100)
-
-
-def process_user_input(keys, players, bullets, gun):
-    if keys[pygame.K_LEFT]:
-        players.update(-PLAYER_SPEED)
-    elif keys[pygame.K_RIGHT]:
-        players.update(PLAYER_SPEED)
-    elif keys[pygame.K_SPACE] and gun.is_ready:
-        gun.is_ready = False
-        mixer.Sound(SHOOT_SOUND).play()
-        for bullet in bullets:
-            if not bullet.is_active:
-                bullet.is_active = True
-                for player in players:
-                    bullet.rect.x = player.rect.x
-        pygame.time.set_timer(gun.fire_event, 100)
 
 
 def main():
@@ -163,7 +166,7 @@ def main():
     bullet_image = pygame.transform.scale(
         pygame.image.load(BULLET_IMAGE), IMAGE_SIZE_BULLET
     )
-    player = pygame.sprite.Group()
+    player = Group()
     player.add(
         Figure.new(
             START_POSITION_PLAYER_X,
@@ -172,7 +175,7 @@ def main():
             player_image,
         )
     )
-    enemies = pygame.sprite.Group()
+    enemies = Group()
     enemies.add(
         *[
             Figure.new(
@@ -188,7 +191,7 @@ def main():
     bullets.add(
         *[
             Bullet.new(
-                0,
+                -IMAGE_SIZE_BULLET[0],
                 START_POSITION_Y,
                 IMAGE_SIZE_BULLET,
                 bullet_image,
@@ -199,14 +202,10 @@ def main():
 
     font = pygame.font.Font("freesansbold.ttf", 32)
 
-    control_game(
-        screen,
-        background,
-        player,
-        enemies,
-        bullets,
-        font,
+    game = Game(
+        screen, background, player, enemies, bullets, font, pygame.USEREVENT + 1
     )
+    game.run()
 
 
 if __name__ == "__main__":
